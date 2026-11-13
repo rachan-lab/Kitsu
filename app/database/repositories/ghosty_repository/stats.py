@@ -4,6 +4,7 @@ import asyncio
 from typing import Any
 
 from pymongo import ReturnDocument
+from app.services.ghosty_forecast_policy import BANDED_POLICIES, FORECAST_EXCLUSION_SETTINGS, POINT_POLICIES
 
 from . import state
 from .state import _channel_filter, _now
@@ -158,6 +159,13 @@ async def claim_streak_forecast(
                                         ]
                                     },
                                     {"$gt": ["$streak_forecast.hit_at", 0]},
+                                    *([{"$eq": ["$streak_forecast.prediction_policy", forecast["prediction_policy"]]}]
+                                      if forecast.get("prediction_policy") in BANDED_POLICIES else []),
+                                    *([{"$in": [{"$type": "$streak_forecast.initial_pick"}, ["int", "long"]]},
+                                       {"$gt": ["$streak_forecast.initial_pick", 0]}]
+                                      if forecast.get("prediction_policy") in POINT_POLICIES else []),
+                                    *[{"$eq": [f"$streak_forecast.{key}", forecast[key]]}
+                                      for key in FORECAST_EXCLUSION_SETTINGS if key in forecast],
                                 ]
                             },
                             "$streak_forecast",

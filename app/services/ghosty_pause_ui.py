@@ -27,7 +27,7 @@ class PauseSetupView(PauseView):
         super().__init__(timeout=180)
         self.cog, self.owner_id, self.channel_id, self.guild_id = cog, member.id, channel.id, channel.guild.id
         select = discord.ui.Select(
-            custom_id="ghosty:pause:choose_duration", placeholder="Choose how long to reserve this channel…",
+            custom_id="ghosty:pause:choose_duration", placeholder="Choose how long to reserve this channel...",
             options=[discord.SelectOption(label=f"{key[:-1]} {'minutes' if key.endswith('m') else ('hour' if key == '1h' else 'hours')}", value=key)
                      for key in PAUSE_DURATIONS],
         )
@@ -86,8 +86,8 @@ class GhostyPauseView(PauseView):
             status = f"**Read-only reservation** · Ends <t:{expiry}:R>\n**Expires:** <t:{expiry}:F> · **Duration:** {record['duration']}"
         else:
             status = "**Permission restoration is pending.** It will retry automatically; the owner or a moderator can also press Resume."
-        add = discord.ui.UserSelect(custom_id="ghosty:pause:add", placeholder="Allow a member to send messages…", disabled=not active)
-        remove = discord.ui.UserSelect(custom_id="ghosty:pause:remove", placeholder="Remove an approved member…",
+        add = discord.ui.UserSelect(custom_id="ghosty:pause:add", placeholder="Allow a member to send messages...", disabled=not active)
+        remove = discord.ui.UserSelect(custom_id="ghosty:pause:remove", placeholder="Remove an approved member...",
                                        disabled=not active or not record["allowed_ids"])
         resume = discord.ui.Button(label="Resume channel", custom_id="ghosty:pause:resume",
                                    style=discord.ButtonStyle.danger, disabled=closed)

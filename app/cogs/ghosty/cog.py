@@ -22,12 +22,14 @@ from .dashboard import GhostyDashboard
 from .dashboard_delivery import DashboardDelivery
 from .groups import ghosty, tempchannel, tempchannels
 from .guards import GhostyGuards
+from .hit_summary import SilentPingButton
 from .live import GhostyLiveResults
 from .owner_commands import OwnerCommands
 from .prefix_commands import PrefixCommands
 from .quota_commands import QuotaCommands
 from .staff_commands import StaffCommands
 from .tracking_commands import TrackingCommands
+from .tracker_charts import GhostyTrackerCharts
 
 
 class GhostyCog(
@@ -36,6 +38,7 @@ class GhostyCog(
     DashboardDelivery,
     DashboardControls,
     GhostyLiveResults,
+    GhostyTrackerCharts,
     TrackingCommands,
     QuotaCommands,
     StaffCommands,
@@ -66,7 +69,9 @@ class GhostyCog(
         self._dashboard_refresh_versions: dict[int, int] = {}
         self._dashboard_repost_after: dict[int, int] = {}
         self._unsaved_trackers: dict[int, int] = {}
+        self._tracker_chart_jobs: dict[int, asyncio.Task] = {}
         self._dashboard_pending_cleanup: dict[int, list[discord.Message]] = {}
+        self._dashboard_controls_versions: dict[int, tuple[int, int]] = {}
 
     async def cog_load(self) -> None:
         load_hit_reactions()
@@ -78,6 +83,7 @@ class GhostyCog(
         self._initialized = True
 
         self.bot.add_view(self._build_dashboard_controls_view())
+        self.bot.add_dynamic_items(SilentPingButton)
         for entry in await pause_repository.get_all_pauses():
             record = entry["pause"]
             if record.get("panel_id"):
@@ -95,6 +101,7 @@ class GhostyCog(
             self.refresh_dashboard.start()
 
     def cog_unload(self) -> None:
+        self.bot.remove_dynamic_items(SilentPingButton)
         for task in tuple(self._background_tasks):
             task.cancel()
         self.service.stop()

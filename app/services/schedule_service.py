@@ -25,7 +25,13 @@ DIRECTIVE_PATTERN = re.compile(
 )
 
 
-def parse_message_script(script: str):
+def parse_message_script(script: str, *, scheduled_at: datetime | None = None):
+    if "{relative_time}" in script:
+        occurrence = scheduled_at or datetime.now(ZoneInfo("UTC"))
+        script = script.replace(
+            "{relative_time}", discord.utils.format_dt(occurrence, style="R")
+        )
+
     matches = list(DIRECTIVE_PATTERN.finditer(script))
 
     # Plain text without directives.
@@ -227,7 +233,7 @@ class ScheduleService:
                 # Always parse the latest message script fetched from
                 # MongoDB so edits apply without restarting the bot.
                 content, embed = parse_message_script(
-                    schedule["message"]
+                    schedule["message"], scheduled_at=scheduled_at
                 )
 
                 allowed_mentions = discord.AllowedMentions.none()

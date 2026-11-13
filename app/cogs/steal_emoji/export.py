@@ -5,7 +5,8 @@ import io
 
 import aiohttp
 
-from .constants import logger
+from .constants import GIF_EXPORT_SIZE, MAX_GIF_EXPORT_SIZE, logger
+from .image_geometry import fit_frames
 from .models import StealItem
 
 
@@ -26,7 +27,7 @@ async def download_file(url: str) -> bytes:
             return await response.read()
 
 
-def convert_image(data: bytes, target_format: str) -> bytes:
+def convert_image(data: bytes, target_format: str, *, max_size: int | None = None) -> bytes:
     try:
         from PIL import Image, ImageSequence
     except ImportError as exc:
@@ -39,11 +40,21 @@ def convert_image(data: bytes, target_format: str) -> bytes:
     with Image.open(io.BytesIO(data)) as image:
         loop = image.info.get("loop", 0)
 
-        frames = [frame.convert("RGBA") for frame in ImageSequence.Iterator(image)]
+        # APNG poster images are not part of the animation.
+        first_frame = int(bool(image.info.get("default_image")))
+        frames, durations = [], []
+        for index, frame in enumerate(ImageSequence.Iterator(image)):
+            if index < first_frame:
+                continue
+            frames.append(frame.convert("RGBA"))
+            durations.append(frame.info.get("duration", 100) or 100)
 
-        durations = [
-            frame.info.get("duration", 100) or 100 for frame in ImageSequence.Iterator(image)
-        ]
+        changed = False
+        if max_size is not None:
+            frames, changed = fit_frames(frames, max_size)
+        # Small native GIFs that already fit need no lossy re-encoding.
+        if target_format == "GIF" and image.format == "GIF" and not changed:
+            return data
 
         first = frames[0]
 
@@ -75,6 +86,10 @@ def convert_image(data: bytes, target_format: str) -> bytes:
 
             for frame in frames:
                 alpha = frame.getchannel("A")
+                # Pillow treats an all-background delta as another GIF header.
+                # Give later blank frames a different transparent index so they
+                # remain real timed frames after the previous frame is cleared.
+                transparent_index = 254 if gif_frames and alpha.getextrema()[1] < 128 else 255
                 rgb = Image.new("RGB", frame.size, "white")
                 rgb.paste(frame.convert("RGB"), mask=alpha)
 
@@ -84,6 +99,7 @@ def convert_image(data: bytes, target_format: str) -> bytes:
                 )
 
                 indexed.putpalette(palette_data)
+                indexed.info["transparency"] = transparent_index
 
                 pixels = indexed.load()
                 alpha_pixels = alpha.load()
@@ -91,7 +107,7 @@ def convert_image(data: bytes, target_format: str) -> bytes:
                 for y in range(frame.height):
                     for x in range(frame.width):
                         if alpha_pixels[x, y] < 128:
-                            pixels[x, y] = 255
+                            pixels[x, y] = transparent_index
 
                 gif_frames.append(indexed)
 
@@ -103,7 +119,6 @@ def convert_image(data: bytes, target_format: str) -> bytes:
                 duration=durations if len(gif_frames) > 1 else 100,
                 loop=loop,
                 optimize=False,
-                transparency=255,
                 disposal=2,
             )
 
@@ -142,8 +157,12 @@ def convert_image(data: bytes, target_format: str) -> bytes:
 async def export_item(
     item: StealItem,
     target_format: str,
+    *,
+    max_size: int = GIF_EXPORT_SIZE,
 ) -> tuple[bytes, str]:
-    data = await download_file(item.url)
+    if target_format == "GIF" and (type(max_size) is not int or not 1 <= max_size <= MAX_GIF_EXPORT_SIZE):
+        raise ValueError(f"Choose a GIF size between 1 and {MAX_GIF_EXPORT_SIZE}px.")
+    data = await download_file(item.download_url)
 
     if target_format == "JSON":
         if item.source_format != "lottie":
@@ -151,8 +170,10 @@ async def export_item(
 
         return data, "json"
 
-    if target_format == "GIF" and item.source_format == "gif":
-        return data, "gif"
+    if item.source_format == "lottie":
+        from .lottie import render_lottie
+
+        data = await asyncio.to_thread(render_lottie, data)
 
     if target_format == "APNG" and item.source_format == "apng":
         return data, "png"
@@ -164,6 +185,7 @@ async def export_item(
         convert_image,
         data,
         target_format,
+        max_size=max_size if target_format == "GIF" else None,
     )
 
     extension = {

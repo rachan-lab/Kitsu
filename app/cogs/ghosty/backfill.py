@@ -189,7 +189,7 @@ class BackfillCommands:
         )
 
         await interaction.followup.send(
-            f"**Ghosty Backfill — {mode}**\n"
+            f"**Ghosty Backfill - {mode}**\n"
             f"Text channels: **{len(guild.text_channels):,}**\n"
             f"Channels completed: **{channels_completed:,}**\n"
             f"Channels failed/inaccessible: **{inaccessible:,}**\n"

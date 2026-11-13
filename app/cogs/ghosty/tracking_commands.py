@@ -164,7 +164,7 @@ class TrackingCommands:
     )
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.describe(
-        minimum_samples="Minimum recorded gambles per channel (1–100000).",
+        minimum_samples="Minimum recorded gambles per channel (1-100000).",
         pattern_predictions="Consider learned daily reset, new-channel, and streak patterns when validated.",
     )
     async def configure(

@@ -8,6 +8,7 @@ from .components import (
     MakePublicButton,
     StealActionButton,
     StealExportSelect,
+    StealToServerButton,
     build_asset_container,
 )
 from .constants import ASSET_COLOR, STEAL_TIMEOUT, logger
@@ -47,17 +48,7 @@ class StealEmojiView(discord.ui.LayoutView):
             total,
         )
 
-        export_select = StealExportSelect(
-            self,
-            [
-                discord.SelectOption(
-                    label=fmt,
-                    value=fmt,
-                    description=f"Export as {fmt}",
-                )
-                for fmt in item.export_options
-            ],
-        )
+        export_select = StealExportSelect(self)
 
         container.add_item(discord.ui.ActionRow(export_select))
 
@@ -103,7 +94,14 @@ class StealEmojiView(discord.ui.LayoutView):
             )
             return False
 
-        if interaction.user.id != self.owner_id:
+        # Everyone viewing a public preview may open their own private server
+        # picker. Paging, exporting and publishing still belong to its author.
+        custom_id = (getattr(interaction, "data", None) or {}).get("custom_id")
+        stealing = any(
+            isinstance(child, StealToServerButton) and child.custom_id == custom_id
+            for child in self.walk_children()
+        )
+        if interaction.user.id != self.owner_id and not stealing:
             await interaction.response.send_message(
                 "Only the person who ran this command can use these controls.",
                 ephemeral=True,
@@ -150,17 +148,7 @@ class StealEmojiView(discord.ui.LayoutView):
                 if isinstance(accessory, discord.ui.Button):
                     accessory.disabled = True
 
-        export_select = StealExportSelect(
-            self,
-            [
-                discord.SelectOption(
-                    label=fmt,
-                    value=fmt,
-                    description=f"Export as {fmt}",
-                )
-                for fmt in item.export_options
-            ],
-        )
+        export_select = StealExportSelect(self)
         export_select.disabled = True
 
         container.add_item(discord.ui.ActionRow(export_select))
@@ -201,7 +189,8 @@ class StealEmojiView(discord.ui.LayoutView):
 
         if self.message is not None:
             try:
-                await self.message.edit(view=self)
+                # Edits must repeat the original reply's mention suppression.
+                await self.message.edit(view=self, allowed_mentions=discord.AllowedMentions.none())
                 logger.info("[STEAL] UI expired and controls disabled.")
             except discord.HTTPException:
                 logger.exception("[STEAL] Could not edit expired UI.")

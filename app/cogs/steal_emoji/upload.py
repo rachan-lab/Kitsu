@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import io
+import re
 
 import discord
 from PIL import Image, ImageSequence
 
+from .constants import STICKER_SIZE
 from .export import convert_image
+from .image_geometry import fit_frames
 from .models import StealItem
 
 EMOJI_UPLOAD_LIMIT = 256 * 1024
@@ -15,7 +18,7 @@ STICKER_UPLOAD_LIMIT = 512 * 1024
 
 def prepare_image(data: bytes, *, sticker: bool) -> tuple[bytes, str]:
     """Prepare server-upload bytes independently of the enlarged preview URL."""
-    size = 320 if sticker else 128
+    size = STICKER_SIZE if sticker else 128
     limit = STICKER_UPLOAD_LIMIT if sticker else EMOJI_UPLOAD_LIMIT
     label = "sticker" if sticker else "emoji"
     try:
@@ -30,19 +33,15 @@ def prepare_image(data: bytes, *, sticker: bool) -> tuple[bytes, str]:
                 if index < first_frame:
                     continue
                 durations.append(frame.info.get("duration", 100) or 100)
-                scaled = frame.convert("RGBA")
-                scaled.thumbnail((size, size), Image.Resampling.LANCZOS)
-                canvas = Image.new("RGBA", (size, size))
-                canvas.alpha_composite(
-                    scaled, ((size - scaled.width) // 2, (size - scaled.height) // 2)
-                )
-                frames.append(canvas)
+                frames.append(frame.convert("RGBA"))
 
             if sticker and animated and sum(durations) > 5000:
                 raise ValueError("Animated stickers must be at most 5 seconds long.")
-            valid_size = image.size == (320, 320) if sticker else max(image.size) <= 128
+            frames, changed = fit_frames(frames, size, upscale=True, square=True)
+            valid_size = image.size == (size, size) if sticker else max(image.size) <= size
             if (
                 valid_size
+                and not changed
                 and len(data) <= limit
                 and image.format
                 in ({"PNG", "GIF"} if sticker else {"PNG", "GIF", "JPEG", "WEBP", "AVIF"})
@@ -82,9 +81,19 @@ async def add_to_server(
 ) -> discord.Emoji | discord.GuildSticker:
     """Upload the selected asset to its matching guild-expression endpoint."""
     if item.item_type == "emoji":
+        if item.source_format == "lottie":
+            from .lottie import render_lottie
+
+            # Render before cropping so small artwork within the vector canvas
+            # retains detail when fitted to the emoji dimensions.
+            data = await asyncio.to_thread(render_lottie, data)
         image, _ = await asyncio.to_thread(prepare_image, data, sticker=False)
+        # Sticker names can contain spaces and Unicode that emoji names reject.
+        name = re.sub(r"[^A-Za-z0-9_]", "_", item.name)[:32]
+        if len(name) < 2 or not name.strip("_"):
+            name = f"emoji_{item.item_id}"[:32]
         return await guild.create_custom_emoji(
-            name=item.name[:32],
+            name=name,
             image=image,
             reason=f"Emoji added by {actor}",
         )

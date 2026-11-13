@@ -151,7 +151,8 @@ def classify_response(response_content: str) -> dict[str, Any] | None:
     """Classify a valid Ghosty gambling response without matching a command.
 
     Ghosty's response text contains the actual wager for both hits and misses.
-    Balance replies and other unrelated messages do not match these patterns.
+    Both patterns require Ghosty's self-recipient template. Ordinary transfers,
+    balance replies and truncated responses cannot establish a gamble.
     """
     hit_payout_match = HIT_PAYOUT_RE.search(response_content)
     if hit_payout_match:

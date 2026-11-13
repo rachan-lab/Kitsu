@@ -7,17 +7,19 @@ from typing import Any
 
 import numpy as np
 
+from app.services.ghosty_forecast_policy import ANCHOR_POLICY, NUMBER_POLICY, band_interval, clean_evaluation, select_candidate
+
 from .constants import (
     FEATURES,
     FORECAST_HORIZON,
+    MAX_HIT_CANDIDATES,
+    MIN_COMPLETED_STREAKS,
     NEW_CHANNEL_HOURS,
-    STREAK_POOL_STRENGTH,
 )
 from .features import (
     Context,
     channel_age_hours,
     feature_vector,
-    first_hit_candidates,
     fit_logistic,
     logit,
     losses,
@@ -28,9 +30,15 @@ from .features import (
     utc,
 )
 from .serialization import PredictorState
+from .bands import BAND_NAMES, GLOBAL_SEQUENCE_DEPTH, band_summary, streak_band
+from .candidates import OutcomeCandidates
+from .sequences import SequenceHistory
+from .recency import RecentHistory, validate_recency
+from .pulses import validate_pulses
+from .windows import accuracy_summary, combine_sequence_validation, combine_validation, validate_windows
 
 
-class GhostyPredictor(PredictorState):
+class GhostyPredictor(OutcomeCandidates, PredictorState):
     def __init__(self, history: list[dict[str, Any]], *, now: datetime, enabled: bool = True):
         now = utc(now)
         self.trained_at = now
@@ -50,6 +58,14 @@ class GhostyPredictor(PredictorState):
         self.counts: dict[int, Counter] = {}
         self.streak_risk: dict[int, Counter] = {}
         self.streak_hits: dict[int, Counter] = {}
+        self.sequence_history = SequenceHistory()
+        self.sequence_active = False
+        self.global_sequence_history = SequenceHistory(GLOBAL_SEQUENCE_DEPTH)
+        self.global_sequence_active = False
+        self.global_recent_streaks: tuple[int, ...] = ()
+        self.recency_history = RecentHistory()
+        self.recency_active = False
+        self.pulse_active = False
         for row in rows:
             channel_id = int(row["channel_id"])
             stamp = utc(row["created_at"])
@@ -69,9 +85,16 @@ class GhostyPredictor(PredictorState):
                 risk[attempt] += 1
                 if hit:
                     hits[attempt] += 1
+                self.sequence_history.observe(channel_id, context, at=stamp, hit=hit)
+                self.global_sequence_history.observe(
+                    channel_id, replace(context, recent_streaks=self.global_recent_streaks), at=stamp, hit=hit,
+                )
+                if hit:
+                    self.global_recent_streaks = (*self.global_recent_streaks, attempt)[-GLOBAL_SEQUENCE_DEPTH:]
             outcomes.append(float(hit))
             self.counts.setdefault(channel_id, Counter())["total"] += 1
             self.counts[channel_id]["hits"] += hit
+            self.recency_history.observe(channel_id, context, hit=hit)
             context.observe(hit, at=stamp)
 
         self.samples = len(rows)
@@ -80,7 +103,18 @@ class GhostyPredictor(PredictorState):
         self.mask = np.zeros(len(FEATURES))
         self.active = False
         self.validation: dict[str, Any] = {
-            "status": "disabled" if not enabled else "insufficient_data"
+            "status": "disabled" if not enabled else "insufficient_data",
+            "forecast_accuracy": accuracy_summary([
+                evaluation for row in rows if row["outcome"] == "hit"
+                if (evaluation := clean_evaluation(row.get("forecast_evaluation"))) is not None
+            ]),
+            "observations": {
+                "known_previous_streak": sum(vector[15] == 1 for vector in vectors),
+                "weekend_gambles": sum(vector[18] == 1 for vector in vectors),
+                "weekend_hits": sum(int(hit) for vector, hit in zip(vectors, outcomes) if vector[18] == 1),
+                "weekday_gambles": sum(vector[18] == 0 for vector in vectors),
+                "weekday_hits": sum(int(hit) for vector, hit in zip(vectors, outcomes) if vector[18] == 0),
+            },
         }
         y = np.asarray(outcomes, dtype=float)
         self.pooled_rate, self.channel_rates = rates(channels, y)
@@ -89,10 +123,15 @@ class GhostyPredictor(PredictorState):
 
         x = np.asarray(vectors, dtype=float)
         first_split = int(len(rows) * 0.6)
-        # Select supported features using only the earliest training window.
-        # A newly eligible feature must not enter the final model untested.
-        mask = supported_features(x[:first_split], y[:first_split], set(days[:first_split]))
+        # Discover features in the earliest training window; require later
+        # observations of the new patterns before testing their coefficients.
+        mask = supported_features(
+            x[:first_split], y[:first_split], set(days[:first_split]),
+            validation=(x[first_split:], y[first_split:]),
+        )
         model_scores, baseline_scores, historical_scores, fold_results = [], [], [], []
+        fold_metrics = []
+        window_folds = []
         for start, end in (
             (int(len(rows) * 0.6), int(len(rows) * 0.8)),
             (int(len(rows) * 0.8), len(rows)),
@@ -103,6 +142,7 @@ class GhostyPredictor(PredictorState):
             pooled, channel_rates = rates(channels[:start], train_y)
             offsets = logit(np.asarray([channel_rates[channel] for channel in channels[:start]]))
             weights = fit_logistic(x[:start] * mask, train_y, offsets)
+            window_folds.append(validate_windows(type(self), rows[:start], rows[start:end], weights, mask))
             baseline = np.asarray(
                 [channel_rates.get(channel, pooled) for channel in channels[start:end]]
             )
@@ -119,6 +159,12 @@ class GhostyPredictor(PredictorState):
             baseline_loss, _ = losses(test_y, baseline)
             historical_loss, _ = losses(test_y, historical)
             fold_results.append(model_loss < min(baseline_loss, historical_loss))
+            fold_metrics.append({
+                "samples": len(test_y), "model_log_loss": model_loss,
+                "baseline_log_loss": baseline_loss, "historical_log_loss": historical_loss,
+                "weekend_gambles": int(x[start:end, 18].sum()),
+                "weekend_hits": int(test_y[x[start:end, 18] == 1].sum()),
+            })
             model_scores.extend(predicted)
             baseline_scores.extend(baseline)
             historical_scores.extend(historical)
@@ -127,13 +173,40 @@ class GhostyPredictor(PredictorState):
         model_loss, model_brier = losses(test_y, np.asarray(model_scores))
         base_loss, base_brier = losses(test_y, np.asarray(baseline_scores))
         historical_loss, historical_brier = losses(test_y, np.asarray(historical_scores))
-        self.active = (
+        gamble_validated = (
             all(fold_results)
             and model_loss <= min(base_loss, historical_loss) * 0.99
             and model_brier < min(base_brier, historical_brier)
         )
+        window_validation = combine_validation(window_folds)
+        sequence_validation = combine_sequence_validation(window_folds)
+        global_validation = combine_sequence_validation(window_folds, "global")
+        self.global_sequence_active = global_validation["accepted"] and (
+            global_validation["model_success_percent"] >= max(
+                window_validation["model_success_percent"], sequence_validation["model_success_percent"],
+            )
+        ) and (not sequence_validation["accepted"] or
+               global_validation["model_success_percent"] > sequence_validation["model_success_percent"])
+        self.sequence_active = sequence_validation["accepted"] and (
+            sequence_validation["model_success_percent"] >= window_validation["model_success_percent"]
+        ) and not self.global_sequence_active
+        self.active = gamble_validated or window_validation["accepted"]
+        recency_validation = validate_recency(rows)
+        self.recency_active = recency_validation["accepted"] and (
+            recency_validation["model_success_percent"] >= max(
+                value["model_success_percent"] or 0
+                for value in (window_validation, sequence_validation, global_validation)
+            )
+        )
+        if self.recency_active:
+            self.sequence_active = self.global_sequence_active = False
+        pulse_validation = validate_pulses(rows)
+        self.pulse_active = pulse_validation["accepted"]
+        if self.pulse_active:
+            self.sequence_active = self.global_sequence_active = self.recency_active = False
         self.validation = {
-            "status": "validated" if self.active else "baseline_better",
+            **self.validation,
+            "status": "validated" if self.active or self.sequence_active or self.global_sequence_active or self.recency_active or self.pulse_active else "baseline_better",
             "samples": len(test_y),
             "model_log_loss": model_loss,
             "baseline_log_loss": base_loss,
@@ -141,6 +214,16 @@ class GhostyPredictor(PredictorState):
             "baseline_brier": base_brier,
             "historical_log_loss": historical_loss,
             "historical_brier": historical_brier,
+            "folds": fold_metrics,
+            "hit_window": window_validation,
+            "sequence_windows": sequence_validation,
+            "global_sequence_windows": global_validation,
+            "recent_streaks": recency_validation,
+            "label_pulses": pulse_validation,
+            "selection_metric": "label_pulses" if self.pulse_active else "recent_streaks" if self.recency_active else "global_sequence_windows" if self.global_sequence_active else "sequence_windows" if self.sequence_active else (
+                "gamble_probability" if gamble_validated else "hit_window" if self.active else "historical"
+            ),
+            "supported_pattern_features": [FEATURES[i] for i in range(15, len(FEATURES)) if mask[i]],
         }
         self.mask = mask
         if self.active:
@@ -155,51 +238,6 @@ class GhostyPredictor(PredictorState):
         for values in self.streak_hits.values():
             self._pooled_streak_hits.update(values)
 
-    def _streak_outcome_candidates(
-        self,
-        channel_id: int,
-        streak: int,
-        context_hazards: np.ndarray,
-        prior: float,
-    ) -> list[dict[str, Any]]:
-        """Learn possible hit positions from observed runs in the shared model.
-
-        Attempt counts include unfinished runs, so a miss at a position lowers
-        its estimate on retraining. Other channels provide a modest prior;
-        channels with their own completed runs propose their own hit positions.
-        """
-        channel_hits = self.streak_hits.get(channel_id, Counter())
-        allowed = set(channel_hits or self._pooled_streak_hits)
-        future = [attempt for attempt in allowed if attempt > streak]
-        if not future:
-            return []
-        positions = np.arange(streak + 1, max(future) + 1)
-        channel_risk = self.streak_risk.get(channel_id, Counter())
-        local_risk = np.asarray([channel_risk[int(attempt)] for attempt in positions], dtype=float)
-        local_hits = np.asarray([channel_hits[int(attempt)] for attempt in positions], dtype=float)
-        other_risk = (
-            np.asarray([self._pooled_streak_risk[int(attempt)] for attempt in positions])
-            - local_risk
-        )
-        other_hits = (
-            np.asarray([self._pooled_streak_hits[int(attempt)] for attempt in positions])
-            - local_hits
-        )
-        # Jeffreys smoothing avoids treating a small sample as certainty. Use
-        # only other channels for the pooled prior to avoid counting data twice.
-        shared = (other_hits + 0.5) / (other_risk + 1)
-        hazards = np.where(
-            other_risk > 0,
-            (local_hits + STREAK_POOL_STRENGTH * shared) / (local_risk + STREAK_POOL_STRENGTH),
-            (local_hits + 0.5) / (local_risk + 1),
-        )
-        if self.active:
-            # Only validated context effects may adjust the empirical curve.
-            indices = np.minimum(np.arange(len(positions)), len(context_hazards) - 1)
-            adjustment = logit(context_hazards[indices]) - logit(np.asarray(prior))
-            hazards = sigmoid(logit(hazards) + adjustment)
-        return first_hit_candidates(hazards, current_streak=streak, allowed_attempts=allowed)
-
     def predict(
         self,
         channel_id: int,
@@ -210,6 +248,7 @@ class GhostyPredictor(PredictorState):
         historical_counts: dict[str, int] | None = None,
         last_gamble_at: datetime | None = None,
         context_override: Context | None = None,
+        global_recent_override: tuple[int, ...] | None = None,
     ) -> dict[str, Any]:
         count = (
             Counter(historical_counts)
@@ -223,8 +262,32 @@ class GhostyPredictor(PredictorState):
             and count["total"] < minimum_samples
         )
         ready = count["total"] >= max(1, minimum_samples) or pooled
+        # A large number of misses is not a large sample of completed runs.
+        # Gate displayed streak targets separately from per-gamble rates. The
+        # raw candidates remain available for chronological model validation.
+        completed_streaks = sum(
+            (self.streak_hits.get(channel_id) or self._pooled_streak_hits).values()
+        )
         result = {
             "ready": ready,
+            "forecast_ready": ready and completed_streaks >= MIN_COMPLETED_STREAKS,
+            "forecast_samples": completed_streaks,
+            "minimum_forecast_samples": MIN_COMPLETED_STREAKS,
+            "streak_band": band_summary(max(1, current_streak)),
+            "sequence_patterns_active": self.sequence_active,
+            "global_sequence_patterns_active": self.global_sequence_active,
+            "recent_patterns_active": self.recency_active,
+            "label_pulse_patterns_active": self.pulse_active,
+            "prediction_policy": NUMBER_POLICY,
+            "forecast_policy": ANCHOR_POLICY,
+            "predicted_band": None,
+            "global_previous_streak_bands": [BAND_NAMES[streak_band(length)] for length in (
+                self.global_recent_streaks if global_recent_override is None else global_recent_override
+            )],
+            "previous_streak_bands": [
+                BAND_NAMES[streak_band(length)] for length in
+                (context_override or self.contexts.get(channel_id, Context())).recent_streaks
+            ],
             "samples": count["total"],
             "training_samples": self.samples,
             "minimum_samples": minimum_samples,
@@ -232,10 +295,13 @@ class GhostyPredictor(PredictorState):
             "hit_at": None,
             "hit_interval": None,
             "hit_candidates": [],
-            "model": "pattern_ml" if self.active else "historical",
-            "candidate_model": "channel_streak_history"
-            if self.streak_hits.get(channel_id)
-            else "pooled_streak_history",
+            "streak_occurrences": dict(self.streak_hits.get(channel_id) or self._pooled_streak_hits),
+            "model": "label_pulses" if self.pulse_active else "recent_streaks" if self.recency_active else "global_sequence_patterns" if self.global_sequence_active else "sequence_patterns" if self.sequence_active else (
+                "pattern_ml" if self.active else "historical"
+            ),
+            "candidate_model": "label_pulse_history" if self.pulse_active else "recent_streak_history" if self.recency_active else "global_sequence_history" if self.global_sequence_active else "sequence_history" if self.sequence_active else (
+                "channel_streak_history" if self.streak_hits.get(channel_id) else "pooled_streak_history"
+            ),
             "pooled": pooled,
             "validation": self.validation,
         }
@@ -248,6 +314,9 @@ class GhostyPredictor(PredictorState):
             if context_override is not None
             else self.contexts.get(channel_id, Context())
         )
+        result["last_hit_length"] = context.previous_streak + 1 if context.previous_streak is not None else None
+        result["last_hit_misses"] = context.previous_streak
+        result["recent_hit_lengths"] = list(context.recent_streaks)
         if last_gamble_at is not None:
             context.last_gamble_at = utc(last_gamble_at)
         context.roll_day(now)
@@ -277,17 +346,16 @@ class GhostyPredictor(PredictorState):
 
         probability = float(hazards[0])
         result["hit_percent"] = round(probability * 100, 2)
-        result["hit_candidates"] = self._streak_outcome_candidates(
-            channel_id, streak, hazards, prior
+        result["forecast_candidates"] = self._streak_outcome_candidates(
+            channel_id, streak, hazards, prior, context=context, now=now,
+            global_recent=self.global_recent_streaks if global_recent_override is None else global_recent_override,
         )
-        if probability <= 0:
-            return result
-        survival = np.cumprod(1 - hazards[:FORECAST_HORIZON])
-        # The streak features are capped at 200, making the remaining tail
-        # constant. Future attempts are assumed to share the current session.
-        expected = float(1 + survival[:-1].sum() + survival[-1] / hazards[-1])
-        result["hit_at"] = streak + max(1, round(expected))
-        bounds = [np.flatnonzero(1 - survival >= quantile) for quantile in (0.25, 0.75)]
-        if all(len(bound) for bound in bounds):
-            result["hit_interval"] = tuple(streak + int(bound[0]) + 1 for bound in bounds)
+        result["hit_candidates"] = result["forecast_candidates"][:MAX_HIT_CANDIDATES]
+        if result["forecast_candidates"]:
+            selected, _ = select_candidate(result["forecast_candidates"], streak)
+            result.update(hit_at=selected["attempt"], predicted_band=selected["band"],
+                          predicted_band_percent=100 * selected["band_probability"])
+            result["hit_interval"] = band_interval(
+                selected["attempt"], misses=streak, maximum=max(item["attempt"] for item in result["forecast_candidates"]),
+            )
         return result

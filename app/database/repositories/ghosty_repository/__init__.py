@@ -12,6 +12,8 @@ from .history import get_last_gamble_at as get_last_gamble_at
 from .history import get_prediction_history as get_prediction_history
 from .history import has_live_gambles as has_live_gambles
 from .history import record_gamble as record_gamble
+from .notifications import get_silent_ping_user_ids as get_silent_ping_user_ids
+from .notifications import toggle_silent_ping as toggle_silent_ping
 from .state import _channel_filter as _channel_filter
 from .state import _now as _now
 from .state import channel_stats as channel_stats
@@ -47,6 +49,7 @@ __all__ = [
     "get_gamble_history",
     "get_last_gamble_at",
     "get_prediction_history",
+    "get_silent_ping_user_ids",
     "has_live_gambles",
     "initialize",
     "record_gamble",
@@ -54,4 +57,5 @@ __all__ = [
     "set_config",
     "set_tracker_message",
     "update_channel_stats",
+    "toggle_silent_ping",
 ]

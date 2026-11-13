@@ -9,3 +9,7 @@ temp.txt
 data/
 models/
 scripts/
+/test/
+/tests/
+/work/
+/llm/

@@ -6,14 +6,16 @@ from typing import Any
 
 import discord
 from discord.ext import commands
+from pymongo.errors import PyMongoError
 
 from app.database.repositories import ghosty_repository as repository
 from app.services.emoji_services import get_application_emoji, get_application_emoji_url
-from app.services.ghosty_reaction_service import get_hit_reaction
+from app.services.ghosty_reaction_service import get_hit_reaction, get_streak_hint
 from app.services.ghosty_service import GHOSTY_BOT_ID
 from app.services.ghosty_streak_ui import format_selected_forecast
 
 from .constants import DEFAULT_MINIMUM_SAMPLES, HIT_SUMMARY_COLOR, TRACKER_COLOR, logger
+from .hit_summary import GhostyHitView, edit_hit_estimate, format_hit_reaction
 
 
 class GhostyLiveResults:
@@ -65,13 +67,19 @@ class GhostyLiveResults:
         prediction: dict[str, Any],
     ) -> discord.Embed:
         stats = recorded["stats"]
+        forecast = format_selected_forecast(prediction)
+        reselection = "🎴 The magic cards have another pick..." if forecast and prediction.get("forecast_reselected") else ""
+        hint = get_streak_hint(int(stats.get("streak", 0)))
+        personal_loss = stats.get("user_streak_loss")
+        personal_text = f"{int(personal_loss):,} Goos" if personal_loss is not None else "Unavailable"
+        header = (
+            f"**Total Loss: {int(stats.get('streak_loss', 0)):,} Goos** **・** "
+            f"**Streak: {int(stats.get('streak', 0)):,}**ㅤㅤ\n"
+            f"-# **Your Loss: {personal_text}**"
+        )
         embed = discord.Embed(
             color=TRACKER_COLOR,
-            description=(
-                f"**Streak: {int(stats.get('streak', 0)):,} ・ "
-                f"Total Loss: {int(stats.get('streak_loss', 0)):,} Goos**\n\n"
-                f"{format_selected_forecast(prediction)}"
-            ),
+            description="\n\n".join(part for part in (header, forecast, reselection, hint) if part),
         )
         embed.set_thumbnail(url=get_application_emoji_url("ghosty_track"))
         return embed
@@ -129,6 +137,7 @@ class GhostyLiveResults:
                 logger.warning("Could not remove unsaved Ghosty tracker %s.", new_message.id)
             raise
         self._unsaved_trackers.pop(channel_id, None)
+        self._queue_tracker_chart(new_message, recorded, prediction)
 
     async def _delete_previous_tracker(self, channel: discord.TextChannel, message_id: int) -> None:
         try:
@@ -146,7 +155,7 @@ class GhostyLiveResults:
         label = "win" if net > 0 else "loss" if net < 0 else "break-even"
         embed = discord.Embed(
             color=HIT_SUMMARY_COLOR,
-            description=f"**Streak {label}:** {abs(net):,} Goos",
+            description="**No Loss or Profit**" if net == 0 else f"**Streak {label}:** {abs(net):,} Goos",
         )
         try:
             participants = await self._get_streak_participant_ids(
@@ -173,8 +182,14 @@ class GhostyLiveResults:
         dashboard_id = await repository.get_config(guild.id, "dashboard_channel_id")
         notification = guild.get_channel(int(dashboard_id)) if dashboard_id else None
         notified = False
+        try:
+            silent_hit = user_id in await repository.get_silent_ping_user_ids(guild.id, [user_id])
+        except PyMongoError:
+            logger.exception("Could not read Ghosty mention preferences; posting without market pings")
+            silent_hit = None
         if isinstance(notification, discord.TextChannel):
             try:
+                market_allowed = discord.AllowedMentions.none() if silent_hit is not False else allowed
                 contributor_mentions = " ".join(f"<@{participant}>" for participant in participants)
                 notification_message = await notification.send(
                     content=(
@@ -183,7 +198,7 @@ class GhostyLiveResults:
                         f"Total streak: {int(stats.get('last_streak', 0)):,} ・ Total profit: {net:,} Goos\n"
                         f"-# [Jump to message]({message.jump_url})"
                     ),
-                    allowed_mentions=allowed,
+                    allowed_mentions=market_allowed,
                     suppress_embeds=True,
                 )
                 notified = True
@@ -197,13 +212,26 @@ class GhostyLiveResults:
             await self._learn_next_streak(guild, source.id)
             return
 
-        reaction = get_hit_reaction(net_result=net)
-        summary = f"{embed.description}\n{discord.utils.escape_markdown(reaction)}\n\n"
+        hitter = guild.get_member(user_id) or self.bot.get_user(user_id)
+        personal_net = stats.get("user_streak_net_pl")
+        personal_label = "win" if personal_net is not None and personal_net > 0 else "loss" if personal_net is not None and personal_net < 0 else "break-even"
+        personal_line = (
+            "Your result: Unavailable" if personal_net is None
+            else "There is no loss or profit" if personal_net == 0
+            else f"Your {personal_label}: {abs(int(personal_net)):,} Goos"
+        )
+        reaction = get_hit_reaction(
+            net_result=int(personal_net) if personal_net is not None else net, streak_length=int(stats.get("last_streak", 0)) + 1,
+            display_name=hitter.display_name if hitter is not None else "A player",
+        )
+        reaction_heading, thumbnail_url = format_hit_reaction(reaction)
+        summary = f"{embed.description}\n> {personal_line}\n\n{reaction_heading}"
         loading = await get_application_emoji(self.bot, "loading", "⏳")
-        embed.description = f"{summary}{loading} Learning from this hit…"
+        view = GhostyHitView(guild.id, summary, f"{loading} Learning from this hit...",
+                            ping_text=None if notified else mentions, silent_ping=silent_hit is True,
+                            thumbnail_url=thumbnail_url)
         announcement = await source.send(
-            content=None if notified else mentions,
-            embed=embed,
+            view=view,
             allowed_mentions=discord.AllowedMentions.none() if notified else allowed,
         )
         self._background(
@@ -212,8 +240,6 @@ class GhostyLiveResults:
                 guild,
                 source.id,
                 int(stats.get("total_gambles", 0)),
-                embed,
-                summary,
             )
         )
 
@@ -236,8 +262,6 @@ class GhostyLiveResults:
         guild: discord.Guild,
         channel_id: int,
         streak_base: int,
-        embed: discord.Embed,
-        summary: str,
     ) -> None:
         """Keep the reaction intact while replacing just the loading estimate."""
         next_hit = "Unavailable"
@@ -254,10 +278,8 @@ class GhostyLiveResults:
                 next_hit = f"{hit_at:,}" if hit_at is not None else "Still learning"
         except Exception:
             logger.exception("Could not learn the next Ghosty estimate for channel %s.", channel_id)
-        updated = embed.copy()
-        updated.description = f"{summary}**Next Estimated Hit @** `{next_hit}`"
         try:
-            await announcement.edit(embed=updated, allowed_mentions=discord.AllowedMentions.none())
+            await edit_hit_estimate(announcement, f"**Next Estimated Hit @** `{next_hit}`")
         except discord.NotFound:
             pass
         except discord.HTTPException:
@@ -293,6 +315,7 @@ class GhostyLiveResults:
                     (time.perf_counter() - started) * 1000,
                 )
                 self._queue_dashboard_refresh(guild)
+                self._cancel_tracker_chart(message.channel.id)
                 try:
                     if recorded["outcome"] == "hit":
                         self._background(self._announce_hit(message, recorded))

@@ -11,6 +11,7 @@ from .constants import (
     DASHBOARD_HEADING,
     DASHBOARD_MESSAGE_KEYS,
     DASHBOARD_REFRESH_SECONDS,
+    DEFAULT_MINIMUM_SAMPLES,
     logger,
 )
 
@@ -59,7 +60,10 @@ class DashboardDelivery:
     ) -> list[discord.Message]:
         """Prepare the views, remove the old stack, then post one new stack."""
         market_view = await self._build_dashboard_view(guild)
-        controls_view = self._build_dashboard_controls_view()
+        minimum = int(
+            await repository.get_config(guild.id, "minimum_samples", DEFAULT_MINIMUM_SAMPLES)
+        )
+        controls_view = self._build_dashboard_controls_view(minimum_samples=minimum)
 
         async def remove_old(message: discord.Message) -> None:
             try:
@@ -112,7 +116,25 @@ class DashboardDelivery:
             raise
 
         self._dashboard_pending_cleanup.pop(guild.id, None)
+        self._dashboard_controls_versions[guild.id] = (new_messages[2].id, minimum)
         return new_messages
+
+    async def _refresh_dashboard_controls(self, guild: discord.Guild, message: discord.Message) -> None:
+        """Update old controls once, or when this server's threshold changes."""
+        minimum = int(
+            await repository.get_config(guild.id, "minimum_samples", DEFAULT_MINIMUM_SAMPLES)
+        )
+        version = (message.id, minimum)
+        if self._dashboard_controls_versions.get(guild.id) == version:
+            return
+        await message.edit(
+            view=self._build_dashboard_controls_view(minimum_samples=minimum),
+            content=None,
+            embeds=[],
+            attachments=[],
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        self._dashboard_controls_versions[guild.id] = version
 
     async def _refresh_dashboard_for_guild(
         self,
@@ -147,6 +169,7 @@ class DashboardDelivery:
                         embeds=[],
                         attachments=[],
                     )
+                    await self._refresh_dashboard_controls(guild, messages[2])
                 pending_id = self._dashboard_repost_after.get(guild.id)
                 # A message sent after the new heading may split the stack.
                 # Leave its request pending so the queued job moves it again.

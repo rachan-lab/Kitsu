@@ -102,7 +102,7 @@ class QuotaCommands:
             role_name = role.mention if role else item.get("role_name", str(role_id))
 
             lines.append(
-                f"{role_name} — personal: **{item['personal']}**, total: **{item['total']}**"
+                f"{role_name} - personal: **{item['personal']}**, total: **{item['total']}**"
             )
 
         if not role_limits:

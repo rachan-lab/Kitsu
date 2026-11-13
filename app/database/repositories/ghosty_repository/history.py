@@ -127,7 +127,8 @@ async def get_prediction_history(guild_id: int) -> list[dict[str, Any]]:
     cursor = (
         state.gamble_history.find(
             {"guild_id": str(guild_id)},
-            {"_id": 0, "channel_id": 1, "outcome": 1, "created_at": 1, "result_message_id": 1},
+            {"_id": 0, "channel_id": 1, "outcome": 1, "created_at": 1, "result_message_id": 1,
+             "forecast_evaluation": 1},
         )
         .sort([("created_at", -1), ("result_message_id", -1)])
         .limit(20_000)

@@ -36,6 +36,7 @@ class GhostyService(GhostyForecasts):
         self._prediction_versions: dict[int, int] = {}
         self._live_models: dict[int, GhostyPredictor] = {}
         self._live_contexts: dict[int, dict[int, Context]] = {}
+        self._global_live_contexts: dict[int, tuple[tuple[int, ...], datetime | None]] = {}
         self._streak_forecasts: dict[tuple[int, int], dict[str, Any]] = {}
         self._saved_forecast_bases: dict[tuple[int, int], int] = {}
         self._forecast_locks: dict[tuple[int, int], asyncio.Lock] = {}
@@ -304,8 +305,9 @@ class GhostyService(GhostyForecasts):
             "misses": int(stats.get("misses", 0)),
             "total_gambles": int(stats.get("total_gambles", 0)),
         }
-        if "streak_forecast" in stats:
-            result["streak_forecast"] = stats["streak_forecast"]
+        for key in ("streak_forecast", "forecast_cooldown", "actual_hit_cooldown", "last_hit_length", "last_hit_misses"):
+            if key in stats:
+                result[key] = stats[key]
         return result
 
     async def set_live_enabled(

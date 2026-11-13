@@ -13,9 +13,9 @@ import aiohttp
 logger = logging.getLogger(__name__)
 DEFAULT_MODEL_URL = "http://127.0.0.1:11434"
 DEFAULT_MODEL_NAME = "kitsu_mod"
-FALLBACK_CELEBRATION = "Hurrah! A little Ghosty magic landed — Ghosty says you're welcome! 🎉"
-FALLBACK_LOSS = "Ghosty says you're welcome. Apparently that doesn't include covering the whole tab—this streak still ended at a loss. 😅"
-FALLBACK_BREAK_EVEN = "Ghosty says you're welcome—after all that suspense, we're exactly where we started. 😅"
+FALLBACK_CELEBRATION = "Hurrah! A little Ghosty magic landed - Ghosty says you're welcome! 🎉"
+FALLBACK_LOSS = "Ghosty says you're welcome. Apparently that doesn't include covering the whole tab - this streak still ended at a loss. 😅"
+FALLBACK_BREAK_EVEN = "Ghosty says you're welcome - after all that suspense, we're exactly where we started. 😅"
 CELEBRATION_PROMPT = (
     "You are Kitsu, a playful Discord companion reacting to a completed Ghosty streak. "
     "A payout does not necessarily mean the streak made a profit. Match the NET result supplied by the user. "

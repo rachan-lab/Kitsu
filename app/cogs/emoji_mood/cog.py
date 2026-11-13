@@ -32,8 +32,6 @@ class EmojiMood(commands.Cog):
     def _available_here(self, message) -> bool:
         if message.guild is None or message.author.bot or message.webhook_id is not None:
             return False
-        if message.guild.id != self.bot.main_guild_id:
-            return False
         member = getattr(message.guild, "me", None)
         if member is not None and hasattr(message.channel, "permissions_for"):
             permissions = message.channel.permissions_for(member)

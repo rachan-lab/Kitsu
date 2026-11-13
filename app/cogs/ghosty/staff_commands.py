@@ -113,7 +113,7 @@ class StaffCommands:
             else:
                 expiry_text = "Unknown expiry"
 
-            lines.append(f"{channel_text} — owner <@{creator_id}> — {expiry_text}")
+            lines.append(f"{channel_text} - owner <@{creator_id}> - {expiry_text}")
 
         # Discord message content has a 2,000-character limit.
         pages = []
@@ -139,7 +139,7 @@ class StaffCommands:
 
         for index, page in enumerate(pages[1:], start=2):
             await interaction.followup.send(
-                f"**Temporary channels — page {index}**\n" + "\n".join(page),
+                f"**Temporary channels - page {index}**\n" + "\n".join(page),
                 ephemeral=True,
             )
 

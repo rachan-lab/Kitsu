@@ -22,7 +22,7 @@ GAMBLE_COMMAND_RE = re.compile(
 
 MISS_RE = re.compile(
     r"successfully\s+sent\s+(?:\*\*)?\s*([\d,]+)\s*(?:\*\*)?"
-    r"\s+goos?\b",
+    r"\s+goos?\s+to\s+(?:[-\u2013\u2014]\s*)?[*_`]*me[*_`]*\s*\?",
     re.IGNORECASE,
 )
 
@@ -36,6 +36,6 @@ HIT_PAYOUT_RE = re.compile(
 
 HIT_WAGER_RE = re.compile(
     r"want\s+to\s+send\s+(?:\*\*)?\s*([\d,]+)\s*(?:\*\*)?"
-    r"\s+goos?\b",
+    r"\s+goos?\s+to\s+[*_`]*me[*_`]*\s*\?",
     re.IGNORECASE,
 )

@@ -9,6 +9,11 @@ logger = logging.getLogger(__name__)
 
 
 STEAL_TIMEOUT = 300
+STICKER_SIZE = 320
+# Default GIF file size. Discord controls attachment display dimensions.
+GIF_EXPORT_SIZE = 120
+GIF_EXPORT_PRESETS = (64, 128)
+MAX_GIF_EXPORT_SIZE = STICKER_SIZE
 
 
 ASSET_COLOR = discord.Colour(0x7DBBEB)

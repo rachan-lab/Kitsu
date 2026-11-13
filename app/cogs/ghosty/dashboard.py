@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import time
 from typing import Any
 
@@ -55,33 +56,31 @@ class GhostyDashboard:
                 minimum_samples=minimum_samples,
                 stats=stats,
             )
+            hit_at = prediction.get("hit_at")
+            hit_percent = prediction.get("candidate_percent")
+            if (
+                not prediction.get("ready")
+                or prediction.get("estimate_status") == "missed"
+                or type(hit_at) is not int
+                or hit_at <= int(stats.get("streak", 0))
+                or type(hit_percent) not in (int, float)
+                or not math.isfinite(hit_percent)
+                or not 0 < hit_percent <= 100
+            ):
+                continue
 
             rows.append(
                 {
                     "channel_id": channel_id,
                     "streak": int(stats.get("streak", 0)),
                     "loss": int(stats.get("streak_loss", 0)),
-                    "hit_at": prediction.get("hit_at"),
-                    "hit_percent": prediction.get(
-                        "candidate_percent", prediction.get("hit_percent")
-                    ),
-                    "ready": bool(prediction.get("ready")),
-                    "estimate_status": prediction.get("estimate_status"),
+                    "hit_at": hit_at,
+                    "hit_percent": hit_percent,
                     "paused": bool(stats.get("pause")),
                 }
             )
 
-        rows.sort(
-            key=lambda row: (
-                not row["ready"],
-                (
-                    -row["hit_percent"]
-                    if row["ready"] and row["hit_percent"] is not None
-                    else float("inf")
-                ),
-                row["channel_id"],
-            )
-        )
+        rows.sort(key=lambda row: (-row["hit_percent"], row["channel_id"]))
 
         channels_per_page = 5
         total_pages = max(
@@ -110,7 +109,7 @@ class GhostyDashboard:
             value = str(value)
 
             if len(value) > width:
-                value = value[: max(1, width - 1)] + "…"
+                value = value[: max(1, width - 1)] + "..."
 
             left = max(0, (width - len(value)) // 2)
             right = max(0, width - len(value) - left)
@@ -127,7 +126,7 @@ class GhostyDashboard:
             accent_colour=discord.Colour.dark_purple(),
         )
 
-        container.add_item(discord.ui.TextDisplay(content="### Ghosty Market"))
+        container.add_item(discord.ui.TextDisplay(content="### Ghosty Marketㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤ"))
 
         container.add_item(
             discord.ui.TextDisplay(
@@ -138,7 +137,7 @@ class GhostyDashboard:
         if not rows:
             container.add_item(
                 discord.ui.TextDisplay(
-                    content="No confirmed Ghosty gambles have been recorded yet."
+                    content="No channels have a ready prediction yet."
                 )
             )
         else:
@@ -149,14 +148,8 @@ class GhostyDashboard:
                 if row["paused"]:
                     channel_name = "🔒" + channel_name
                 channel_url = f"https://discord.com/channels/{guild.id}/{channel_id}"
-                hit_at = str(row["hit_at"]) if row["ready"] and row["hit_at"] is not None else "-"
-                if row["ready"] and row["estimate_status"] == "missed":
-                    hit_at += " ×"
-                hit_percent = (
-                    ("<0.1%" if 0 < row["hit_percent"] < 0.1 else f"{row['hit_percent']:.1f}%")
-                    if row["ready"] and row["hit_percent"] is not None
-                    else "-"
-                )
+                hit_at = str(row["hit_at"])
+                hit_percent = "<0.1%" if row["hit_percent"] < 0.1 else f"{row['hit_percent']:.1f}%"
 
                 row_components = discord.ui.ActionRow()
                 row_components.add_item(

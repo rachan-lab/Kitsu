@@ -6,8 +6,12 @@ from typing import Any
 
 from pymongo.errors import DuplicateKeyError
 
+from app.services.ghosty_forecast_policy import COOLDOWN_RUNS, evaluate_forecast, next_forecast_cooldown
+
 from . import state
+from .cooldown import previous_actual_hits
 from .history import get_gamble_by_result_message, get_gamble_by_source_message
+from .personal import current_user_losses
 from .state import _now
 
 
@@ -91,6 +95,12 @@ def _record_result_transaction(
         current_streak = int(stats.get("streak", 0))
         current_loss = int(stats.get("streak_loss", 0))
         streak_net_pl = payout - current_loss if outcome == "hit" else -wager
+        user_losses = current_user_losses(stats, stats_identity, result_message_id=result_message_id, session=session)
+        personal_loss = user_losses.get(user_key, 0) if user_id > 0 else None
+        if outcome == "miss" and personal_loss is not None:
+            personal_loss += wager
+            user_losses[user_key] = personal_loss
+        personal_net = (payout - personal_loss if outcome == "hit" else -personal_loss) if personal_loss is not None else None
 
         if outcome == "hit":
             new_streak = 0
@@ -109,6 +119,9 @@ def _record_result_transaction(
                 "streak": new_streak,
                 "streak_loss": new_loss,
                 "updated_at": now,
+                "streak_user_losses": {} if outcome == "hit" else user_losses,
+                "streak_user_losses_base": int(stats.get("total_gambles", 0)) + 1 if outcome == "hit"
+                else int(stats.get("total_gambles", 0)) - current_streak,
             },
             "$inc": {
                 "net_pl": net_pl_delta,
@@ -118,6 +131,26 @@ def _record_result_transaction(
             },
         }
         if outcome == "hit":
+            stats_update["$set"]["last_hit_misses"] = current_streak
+            stats_update["$set"]["last_hit_length"] = current_streak + 1
+            previous_hits = previous_actual_hits(stats, stats_identity, result_message_id=result_message_id, session=session)
+            stats_update["$set"]["actual_hit_cooldown"] = [*previous_hits, current_streak + 1][-COOLDOWN_RUNS:]
+            stats_update["$set"]["forecast_cooldown"] = next_forecast_cooldown(stats, misses=current_streak)
+            evaluation = evaluate_forecast(
+                stats.get("streak_forecast"),
+                base=int(stats.get("total_gambles", 0)) - current_streak,
+                misses=current_streak, at=created_at or now, source=source,
+            )
+            if evaluation is not None:
+                state.gamble_history.update_one(
+                    history_identity, {"$set": {"forecast_evaluation": evaluation}}, session=session,
+                )
+                stats_update["$set"]["last_forecast_evaluation"] = evaluation
+                stats_update["$inc"].update(
+                    forecast_evaluated=1, forecast_successes=int(evaluation["success"]),
+                    initial_forecast_evaluated=int("initial_success" in evaluation),
+                    initial_forecast_successes=int(evaluation.get("initial_success", False)),
+                )
             # This streak's final tracker becomes an archived message. The
             # first miss of the next streak must not delete it, even on restart.
             stats_update["$unset"] = {"tracker_message_id": "", "streak_forecast": ""}
@@ -140,6 +173,8 @@ def _record_result_transaction(
 
         updated_stats["last_streak"] = last_streak
         updated_stats["streak_net_pl"] = streak_net_pl
+        updated_stats["user_streak_loss"] = personal_loss
+        updated_stats["user_streak_net_pl"] = personal_net
         return updated_stats
 
     with state.client.start_session() as session:

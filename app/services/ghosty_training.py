@@ -12,6 +12,7 @@ import tempfile
 from typing import Any
 
 from app.services.ghosty_prediction import GhostyPredictor, utc
+from app.services.ghosty_forecast_policy import clean_evaluation
 
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,9 @@ class GhostyTrainingStore:
                 "created_at": utc(stamp).isoformat(),
                 "result_message_id": str(row.get("result_message_id") or "0"),
             })
+            evaluation = clean_evaluation(row.get("forecast_evaluation"))
+            if row["outcome"] == "hit" and evaluation is not None:
+                examples[-1]["forecast_evaluation"] = evaluation
         examples.sort(key=lambda row: (row["created_at"], int(row["result_message_id"])))
         return examples
 
@@ -101,8 +105,11 @@ class GhostyTrainingStore:
                 predictor = GhostyPredictor(rows, now=now, enabled=enabled)
                 predictor.training_fingerprint = fingerprint
                 logger.info(
-                    "Trained Ghosty predictor: guild=%s samples=%s status=%s",
+                    "Trained Ghosty predictor: guild=%s samples=%s status=%s "
+                    "weekend_samples=%s known_previous_streaks=%s",
                     guild_id, predictor.samples, predictor.validation["status"],
+                    predictor.validation["observations"]["weekend_gambles"],
+                    predictor.validation["observations"]["known_previous_streak"],
                 )
         try:
             self._write(directory / "training.json", {

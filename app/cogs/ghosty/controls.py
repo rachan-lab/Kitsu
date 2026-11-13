@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import discord
 
+from app.services.ghosty_prediction.constants import MIN_COMPLETED_STREAKS
+
+from .constants import DEFAULT_MINIMUM_SAMPLES
 from .policies import show_policy, show_terms
 from .settings_menu import show_settings_menu
 
 
 class DashboardControls:
-    def _build_dashboard_controls_view(self) -> discord.ui.LayoutView:
+    def _build_dashboard_controls_view(
+        self, *, minimum_samples: int = DEFAULT_MINIMUM_SAMPLES
+    ) -> discord.ui.LayoutView:
         """Build persistent dashboard controls with interactive settings."""
         view = discord.ui.LayoutView(timeout=None)
 
@@ -18,8 +23,12 @@ class DashboardControls:
         controls.add_item(
             discord.ui.TextDisplay(
                 content=(
+                    f"-# Prediction appears after **{minimum_samples:,} gambles** and "
+                    f"**{MIN_COMPLETED_STREAKS} completed streaks** of training,ㅤ\n"
+                    "once an eligible target is ready.\n\n"
                     "Track Ghosty gambling activity, explore channel statistics, "
-                    "andㅤ\nkeep up with recorded hits and streaks."
+                    "andㅤ\nkeep up with recorded hits and streaks.\n\n"
+                    "-# ~"
                 )
             )
         )

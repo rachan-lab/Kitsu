@@ -18,6 +18,7 @@ from .constants import (
     NEW_CHANNEL_HOURS,
     RESET_OFFSET,
     SHORT_WINDOW,
+    STREAK_FEATURE_CAP,
 )
 
 
@@ -33,6 +34,11 @@ def utc(value: datetime) -> datetime:
 def session_day(value: datetime) -> date:
     """05:30 IST belongs to the new prediction day; 05:29 does not."""
     return (utc(value).astimezone(IST) - RESET_OFFSET).date()
+
+
+def is_weekend(value: datetime) -> bool:
+    """Saturday/Sunday by the IST calendar, independently of the daily reset."""
+    return utc(value).astimezone(IST).weekday() >= 5
 
 
 def channel_created_at(channel_id: int) -> datetime:
@@ -57,6 +63,8 @@ class Context:
     day: date | None = None
     session_streak: int = 0
     last_gamble_at: datetime | None = None
+    recent_streaks: tuple[int, ...] = ()
+    run_started_at: datetime | None = None
 
     def roll_day(self, now: datetime) -> None:
         day = session_day(now)
@@ -71,6 +79,8 @@ class Context:
             # The first observed run may start partway through a streak.
             if self.saw_hit:
                 self.previous_streak = self.streak
+                self.recent_streaks = (*self.recent_streaks, self.streak + 1)[-4:]
+            self.run_started_at = utc(at) if at is not None else None
             self.saw_hit = True
             self.streak = self.session_streak = 0
         else:
@@ -92,13 +102,19 @@ def feature_vector(context: Context, channel_id: int, now: datetime) -> list[flo
         context.previous_streak is not None and context.previous_streak >= LONG_STREAK_MISSES
     )
     next_attempt = context.streak + 1
-    scale = math.log1p(200)
+    scale = math.log1p(STREAK_FEATURE_CAP)
+    progress = math.log1p(min(context.streak, STREAK_FEATURE_CAP)) / scale
+    previous = (
+        math.log1p(min(context.previous_streak, STREAK_FEATURE_CAP)) / scale
+        if context.previous_streak is not None else 0.0
+    )
+    weekend = float(is_weekend(now))
     return [
         1.0,
-        math.log1p(min(context.streak, 200)) / scale,
+        progress,
         math.sin(phase),
         math.cos(phase),
-        math.log1p(min(context.session_streak, 200)) / scale,
+        math.log1p(min(context.session_streak, STREAK_FEATURE_CAP)) / scale,
         float(age < NEW_CHANNEL_HOURS),
         float(after_long),
         float(after_long and SHORT_WINDOW[0] <= next_attempt <= SHORT_WINDOW[1]),
@@ -109,6 +125,11 @@ def feature_vector(context: Context, channel_id: int, now: datetime) -> list[flo
         float(last is not None and session_day(last) < session_day(now)),
         math.sin(last_phase) if last is not None else 0.0,
         math.cos(last_phase) if last is not None else 0.0,
+        float(context.previous_streak is not None),
+        previous,
+        previous * progress,
+        weekend,
+        weekend * progress,
     ]
 
 
@@ -130,11 +151,14 @@ def rates(channels: list[int], outcomes: np.ndarray) -> tuple[float, dict[int, f
     }
 
 
-def supported_features(x: np.ndarray, y: np.ndarray, days: set[date]) -> np.ndarray:
+def supported_features(
+    x: np.ndarray, y: np.ndarray, days: set[date],
+    *, validation: tuple[np.ndarray, np.ndarray] | None = None,
+) -> np.ndarray:
     mask = np.ones(len(FEATURES), dtype=float)
     # Constant channel metadata must not act as another intercept.
     mask[1:] = (np.ptp(x[:, 1:], axis=0) >= 1e-9).astype(float)
-    for column in (5, 6, 7, 9, 10, 12):
+    for column in (5, 6, 7, 9, 10, 12, 15, 18):
         group = x[:, column] == 1
         # A single new channel or lucky result must not create a "boost".
         if group.sum() < 30 or (~group).sum() < 30 or y[group].sum() < 3 or y[~group].sum() < 3:
@@ -144,6 +168,26 @@ def supported_features(x: np.ndarray, y: np.ndarray, days: set[date]) -> np.ndar
         mask[11:15] = 0
     if len(days) < 3:
         mask[[2, 3, 4, 9, 12, 13, 14]] = 0
+    # Previous-run length must vary among known, complete runs. An unknown
+    # first run is not evidence of a short run, including a zero-miss hit.
+    windows = [(x, y)]
+    if validation is not None:
+        windows.append(validation)
+    for values, labels in windows:
+        known = values[:, 15] == 1
+        if (
+            known.sum() < 30 or labels[known].sum() < 3
+            or np.ptp(values[known, 16]) < 1e-9
+        ):
+            mask[16:18] = 0
+        weekend = values[:, 18] == 1
+        if (
+            weekend.sum() < 30 or (~weekend).sum() < 30
+            or labels[weekend].sum() < 3 or labels[~weekend].sum() < 3
+        ):
+            mask[18:20] = 0
+    if not mask[18]:
+        mask[19] = 0
     return mask
 
 

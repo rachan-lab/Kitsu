@@ -23,13 +23,19 @@ CHANNEL_AGE_CAP_HOURS = 30 * 24
 GAMBLE_GAP_CAP_HOURS = 7 * 24
 
 
-PREDICTOR_VERSION = 3
+PREDICTOR_VERSION = 15
+
+
+STREAK_FEATURE_CAP = 200
 
 
 STREAK_POOL_STRENGTH = 5.0
 
 
 MAX_HIT_CANDIDATES = 5
+
+
+MIN_COMPLETED_STREAKS = 20
 
 
 FORECAST_HORIZON = 200
@@ -51,4 +57,9 @@ FEATURES = (
     "last_gamble_before_reset",
     "last_gamble_reset_sin",
     "last_gamble_reset_cos",
+    "has_previous_streak",
+    "previous_streak_length",
+    "previous_streak_progress",
+    "weekend",
+    "weekend_progress",
 )

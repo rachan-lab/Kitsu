@@ -1,18 +1,15 @@
 from __future__ import annotations
 
 import asyncio
-import io
-import re
 from typing import TYPE_CHECKING, Literal
 
 import aiohttp
 import discord
 
-from app.bot.permissions import is_guild_moderator
-
 from .constants import ASSET_COLOR, logger
 from .errors import send_upload_reply, upload_error_message
-from .export import download_file, export_item
+from .export import download_file
+from .export_controls import StealExportSelect as StealExportSelect
 from .models import StealItem
 from .upload import add_to_server
 
@@ -30,89 +27,75 @@ class StealToServerButton(discord.ui.Button):
         self.item = item
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        item = self.item
-        guild = interaction.guild
+        from .destinations import StealDestinationView, mutual_guilds
 
-        if guild is None:
-            await interaction.response.send_message(
-                "This can only be used inside a server.",
-                ephemeral=True,
-            )
+        if interaction.guild is None:
+            await interaction.response.send_message("This can only be used inside a server.", ephemeral=True)
             return
-
-        if not isinstance(interaction.user, discord.Member) or not is_guild_moderator(
-            interaction.user
-        ):
-            await interaction.response.send_message(
-                "Only server admins and moderators can use the Steal button.",
-                ephemeral=True,
-            )
-            return
-
-        bot_member = guild.me
-
-        if bot_member is None or not (
-            bot_member.guild_permissions.administrator
-            or bot_member.guild_permissions.create_expressions
-        ):
-            await interaction.response.send_message(
-                "I need the **Create Expressions** permission.",
-                ephemeral=True,
-            )
-            return
-
         await interaction.response.defer(ephemeral=True, thinking=True)
-
-        upload_started = False
-        try:
-            data = await download_file(item.url)
-            upload_started = True
-            asset = await add_to_server(guild, item, data, actor=interaction.user)
-        except (
-            discord.HTTPException,
-            discord.RateLimited,
-            aiohttp.ClientError,
-            asyncio.TimeoutError,
-        ) as exc:
-            logger.warning(
-                "[STEAL] Upload failed | type=%s item_id=%s status=%s code=%s error=%s",
-                item.item_type,
-                item.item_id,
-                getattr(exc, "status", None),
-                getattr(exc, "code", None),
-                type(exc).__name__,
-            )
-            await send_upload_reply(
-                interaction,
-                item,
-                upload_error_message(exc, item.item_type, upload_started=upload_started),
-            )
+        guilds = await mutual_guilds(interaction.client, interaction.user.id)
+        if not guilds:
+            await interaction.followup.send("I couldn't find a shared server. Try again after Kitsu finishes connecting.", ephemeral=True)
             return
+        view = StealDestinationView(self.item, interaction.user.id, guilds)
+        view.message = await interaction.followup.send(
+            "Choose a server and whether to add the asset as an emoji or sticker.",
+            view=view, ephemeral=True, wait=True,
+        )
 
-        except ValueError as exc:
-            await send_upload_reply(interaction, item, str(exc))
-            return
 
-        except Exception:
-            logger.exception(
-                "[STEAL] Failed to add %s | item_id=%s",
-                item.item_type,
-                item.item_id,
-            )
-            await send_upload_reply(
-                interaction,
-                item,
-                f"Something went wrong while adding the {item.item_type}.",
-            )
-            return
-
-        label = str(asset) if item.item_type == "emoji" else "sticker"
+async def upload_to_server(interaction: discord.Interaction, guild: discord.Guild, item: StealItem) -> None:
+    """Deliver an upload after the destination view verifies current permissions."""
+    upload_started = False
+    try:
+        data = await download_file(item.download_url)
+        upload_started = True
+        asset = await add_to_server(guild, item, data, actor=interaction.user)
+    except (
+        discord.HTTPException,
+        discord.RateLimited,
+        aiohttp.ClientError,
+        asyncio.TimeoutError,
+    ) as exc:
+        logger.warning(
+            "[STEAL] Upload failed | type=%s item_id=%s status=%s code=%s error=%s",
+            item.item_type,
+            item.item_id,
+            getattr(exc, "status", None),
+            getattr(exc, "code", None),
+            type(exc).__name__,
+        )
         await send_upload_reply(
             interaction,
             item,
-            f"Successfully added {label} (`{asset.name}`) to **{guild.name}**!",
-            added=True,
+            upload_error_message(exc, item.item_type, upload_started=upload_started),
         )
+        return
+
+    except ValueError as exc:
+        await send_upload_reply(interaction, item, str(exc))
+        return
+
+    except Exception:
+        logger.exception(
+            "[STEAL] Failed to add %s | item_id=%s",
+            item.item_type,
+            item.item_id,
+        )
+        await send_upload_reply(
+            interaction,
+            item,
+            f"Something went wrong while adding the {item.item_type}.",
+        )
+        return
+
+    label = str(asset) if item.item_type == "emoji" else "sticker"
+    await send_upload_reply(
+        interaction,
+        item,
+        f"Successfully added {label} (`{asset.name}`) to **{guild.name}**!",
+        added=True,
+    )
 
 
 def build_asset_container(
@@ -187,7 +170,7 @@ class StealActionButton(discord.ui.Button):
             view.page += 1
 
         view.render_page()
-        await interaction.response.edit_message(view=view)
+        await interaction.response.edit_message(view=view, allowed_mentions=discord.AllowedMentions.none())
 
 
 class MakePublicButton(discord.ui.Button):
@@ -248,73 +231,3 @@ class MakePublicButton(discord.ui.Button):
             f"Published **{item.name}** in this channel.",
             ephemeral=True,
         )
-
-
-class StealExportSelect(discord.ui.Select):
-    def __init__(
-        self,
-        parent_view: StealEmojiView,
-        options: list[discord.SelectOption],
-    ):
-        super().__init__(
-            placeholder="Export as",
-            min_values=1,
-            max_values=1,
-            options=options,
-        )
-        self.parent_view = parent_view
-
-    async def callback(
-        self,
-        interaction: discord.Interaction,
-    ) -> None:
-        view = self.parent_view
-
-        if view.inactive:
-            await interaction.response.send_message(
-                "This steal menu is now inactive. Run the command again.",
-                ephemeral=True,
-            )
-            return
-
-        item = view.items[view.page]
-        selected_format = self.values[0]
-
-        await interaction.response.defer(
-            ephemeral=True,
-            thinking=True,
-        )
-
-        try:
-            data, extension = await export_item(
-                item,
-                selected_format,
-            )
-
-            safe_name = re.sub(
-                r"[^A-Za-z0-9_-]",
-                "_",
-                item.name,
-            )[:50]
-
-            filename = f"{safe_name or 'discord_asset'}.{extension}"
-
-            await interaction.followup.send(
-                content=(f"Exported **{item.name}** as **{selected_format}**."),
-                file=discord.File(
-                    io.BytesIO(data),
-                    filename=filename,
-                ),
-                ephemeral=True,
-            )
-
-        except Exception:
-            logger.exception(
-                "[STEAL] Export failed | item_id=%s | format=%s",
-                item.item_id,
-                selected_format,
-            )
-            await interaction.followup.send(
-                "Export failed. Check the bot console logs for details.",
-                ephemeral=True,
-            )

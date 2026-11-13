@@ -14,7 +14,7 @@ async def show_terms(
     container.add_item(
         discord.ui.TextDisplay(
             content=(
-                "## Ghosty Dashboard — Terms of Service\n"
+                "## Ghosty Dashboard - Terms of Service\n"
                 "The Ghosty Dashboard is a community statistics tool "
                 "that records detected gambling outcomes."
             )
@@ -58,7 +58,7 @@ async def show_policy(
         accent_colour=discord.Colour.dark_purple(),
     )
 
-    container.add_item(discord.ui.TextDisplay(content="## Ghosty Dashboard — Tracking Policy"))
+    container.add_item(discord.ui.TextDisplay(content="## Ghosty Dashboard - Tracking Policy"))
 
     container.add_item(
         discord.ui.TextDisplay(
@@ -84,7 +84,7 @@ async def show_policy(
                 "each channel's age, creation in the current reset day, "
                 "time since its last gamble, whether that gamble was "
                 "before the reset, channels under 24 hours old, and "
-                "attempts 5–15 after a completed run of at least 20 misses. "
+                "attempts 5-15 after a completed run of at least 20 misses. "
                 "These are hypotheses: adjustments need enough observations "
                 "and better performance on later recorded results. "
                 "Otherwise historical rates are used. Daily sessions "

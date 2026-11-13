@@ -19,6 +19,7 @@ from .features import channel_age_hours as channel_age_hours
 from .features import channel_created_at as channel_created_at
 from .features import feature_vector as feature_vector
 from .features import first_hit_candidates as first_hit_candidates
+from .features import is_weekend as is_weekend
 from .features import fit_logistic as fit_logistic
 from .features import logit as logit
 from .features import losses as losses
@@ -49,6 +50,7 @@ __all__ = [
     "channel_created_at",
     "feature_vector",
     "first_hit_candidates",
+    "is_weekend",
     "fit_logistic",
     "logit",
     "losses",

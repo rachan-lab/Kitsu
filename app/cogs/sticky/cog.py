@@ -34,9 +34,13 @@ class Sticky(StickyOperations, commands.GroupCog, group_name="sticky"):
     @tasks.loop(seconds=30)
     async def reconcile_stickies(self):
         """Repair missed events, deleted stickies, and interrupted cleanup."""
-        guild_id = getattr(self.bot, "main_guild_id", None)
-        if not guild_id:
-            return
+        for guild in self.bot.guilds:
+            try:
+                await self._reconcile_guild(guild.id)
+            except Exception:
+                logger.exception("Could not reconcile stickies in guild %s; will retry.", guild.id)
+
+    async def _reconcile_guild(self, guild_id: int):
         for configured in await repository.get_stickies(guild_id):
             channel_id = int(configured["channel_id"])
             channel = self.bot.get_channel(channel_id)
@@ -248,14 +252,11 @@ class Sticky(StickyOperations, commands.GroupCog, group_name="sticky"):
 
         if not isinstance(message.channel, discord.TextChannel):
             return
+        if message.channel.guild.id != message.guild.id:
+            return
 
         # Kitsu must never trigger its own sticky repost.
         if self.bot.user and message.author.id == self.bot.user.id:
-            return
-
-        main_guild_id = getattr(self.bot, "main_guild_id", None)
-
-        if main_guild_id and message.guild.id != main_guild_id:
             return
 
         try:

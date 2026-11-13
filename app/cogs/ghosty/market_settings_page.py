@@ -35,8 +35,8 @@ async def build_settings_page(
                 "## Ghosty Market Settings\n"
                 "Toggle each text channel to choose whether it "
                 "appears on the market dashboard.\n\n"
-                "✅ **Included** — shown on the dashboard\n"
-                "🚫 **Excluded** — hidden from the dashboard\n\n"
+                "✅ **Included** - shown on the dashboard\n"
+                "🚫 **Excluded** - hidden from the dashboard\n\n"
                 "These settings never delete historical records."
             )
         )
